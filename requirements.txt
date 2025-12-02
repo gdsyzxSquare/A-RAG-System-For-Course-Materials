@@ -1,0 +1,44 @@
+# Core RAG Framework
+langchain==0.1.0
+langchain-openai==0.0.2
+langchain-community==0.0.10
+
+# Embeddings & Vector Store
+sentence-transformers==2.3.1
+faiss-cpu==1.7.4
+transformers==4.36.0
+
+# Retrieval
+rank-bm25==0.2.2
+
+# LLM APIs
+openai==1.6.1
+anthropic==0.8.1
+httpx==0.25.2  # Compatible with openai 1.6.1
+
+# Data Processing
+numpy==1.24.3
+pandas==2.1.4
+tiktoken==0.5.2
+
+# Evaluation Metrics
+rouge-score==0.1.2
+nltk==3.8.1
+scikit-learn==1.3.2
+
+# Utilities
+python-dotenv==1.0.0
+pyyaml==6.0.1
+tqdm==4.66.1
+
+# Visualization
+matplotlib==3.8.2
+seaborn==0.13.0
+
+# Optional: Re-ranking
+torch==2.1.2
+
+# Development
+jupyter==1.0.0
+ipykernel==6.27.1
+black==23.12.1
