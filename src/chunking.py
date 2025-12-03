@@ -1,10 +1,11 @@
 """
 Chunking Module for RAG System
 Implements multiple chunking strategies for document splitting
+Includes metadata extraction and dedicated metadata chunks
 """
 
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 
 
@@ -16,6 +17,7 @@ class Chunk:
     start_char: int
     end_char: int
     metadata: Dict[str, Any] = None
+    chunk_type: str = "content"  # 'content' or 'metadata'
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -24,8 +26,120 @@ class Chunk:
             "chunk_id": self.chunk_id,
             "start_char": self.start_char,
             "end_char": self.end_char,
-            "metadata": self.metadata or {}
+            "metadata": self.metadata or {},
+            "chunk_type": self.chunk_type
         }
+
+
+class MetadataExtractor:
+    """Extract structured metadata from course documents"""
+    
+    # Metadata extraction patterns
+    PATTERNS = {
+        'instructor': [
+            r'taught by (?:Prof\.|Professor)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+[A-Z]+)?)',
+            r'Instructor:\s*(?:Prof\.|Professor)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'# ([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z]+)?)\s+AI Thrust',
+        ],
+        'location': [
+            r'Location:\s*([^.\n]+)',
+            r'Room\s+(\d+[A-Z]?,\s*[A-Z]\d+)',
+            r'Rm\s+(\d+,?\s*[A-Z]\d+)',
+        ],
+        'time': [
+            r'Time:\s*([^.\n]+(?:AM|PM)[^.\n]*)',
+            r'((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+\d{1,2}:\d{2}(?:AM|PM)\s*[-–]\s*\d{1,2}:\d{2}(?:AM|PM))',
+        ],
+        'email': [
+            r'\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b',
+        ],
+        'section': [
+            r'Section:\s*([A-Z]\d+)',
+            r'Section\s+([A-Z]\d+\s*\(\d+\))',
+        ],
+        'grading': [
+            r'((?:Homework|Assignment|Exam|Project|Final|Midterm|Quiz|Attendance)[^.]*\d+%)',
+            r'(\d+%[^.]*(?:homework|assignment|exam|project|final|midterm|quiz|attendance))',
+        ]
+    }
+    
+    def extract(self, text: str) -> Dict[str, List[str]]:
+        """
+        Extract all metadata from text
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            Dictionary of metadata fields and their values
+        """
+        metadata = {}
+        
+        for field, patterns in self.PATTERNS.items():
+            values = []
+            for pattern in patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                values.extend([m.strip() for m in matches if m.strip()])
+            
+            if values:
+                # Remove duplicates while preserving order
+                unique_values = list(dict.fromkeys(values))
+                metadata[field] = unique_values
+        
+        return metadata
+    
+    def create_metadata_chunks(
+        self, 
+        text: str, 
+        start_chunk_id: int = 0
+    ) -> List[Chunk]:
+        """
+        Create dedicated chunks for metadata
+        
+        Args:
+            text: Source text
+            start_chunk_id: Starting ID for metadata chunks
+            
+        Returns:
+            List of metadata chunks
+        """
+        metadata = self.extract(text)
+        chunks = []
+        chunk_id = start_chunk_id
+        
+        for field, values in metadata.items():
+            for value in values:
+                # Create a natural language text for the metadata
+                if field == 'instructor':
+                    chunk_text = f"The instructor is {value}. This course is taught by {value}."
+                elif field == 'location':
+                    chunk_text = f"The class is located at {value}. The classroom is {value}."
+                elif field == 'time':
+                    chunk_text = f"The class time is {value}. Classes are held at {value}."
+                elif field == 'email':
+                    chunk_text = f"Contact email: {value}. You can reach us at {value}."
+                elif field == 'section':
+                    chunk_text = f"This is section {value} of the course."
+                elif field == 'grading':
+                    chunk_text = f"Grading policy: {value}"
+                else:
+                    chunk_text = f"{field}: {value}"
+                
+                chunks.append(Chunk(
+                    text=chunk_text,
+                    chunk_id=chunk_id,
+                    start_char=-1,  # Metadata chunks don't have position
+                    end_char=-1,
+                    metadata={
+                        "chunking_method": "metadata_extraction",
+                        "metadata_field": field,
+                        "metadata_value": value
+                    },
+                    chunk_type="metadata"
+                ))
+                chunk_id += 1
+        
+        return chunks
 
 
 class FixedSizeChunker:
@@ -205,26 +319,28 @@ class ChunkerFactory:
     """Factory to create different chunkers"""
     
     @staticmethod
-    def create_chunker(strategy: str, **kwargs):
+    def create_chunker(strategy: str, extract_metadata: bool = True, **kwargs):
         """
         Create a chunker based on strategy
         
         Args:
             strategy: Chunking strategy ('fixed_size', 'semantic', 'sliding_window')
+            extract_metadata: Whether to extract and create metadata chunks
             **kwargs: Additional arguments for the chunker
             
         Returns:
-            Chunker instance
+            Chunker instance with optional metadata extraction wrapper
         """
+        # Create base chunker
         if strategy == "fixed_size":
-            return FixedSizeChunker(**kwargs)
+            base_chunker = FixedSizeChunker(**kwargs)
         elif strategy == "semantic":
             # Map chunk_size to max_chunk_size for semantic chunker
             if 'chunk_size' in kwargs and 'max_chunk_size' not in kwargs:
                 kwargs['max_chunk_size'] = kwargs.pop('chunk_size')
             # Remove overlap parameter as semantic chunker doesn't use it
             kwargs.pop('overlap', None)
-            return SemanticChunker(**kwargs)
+            base_chunker = SemanticChunker(**kwargs)
         elif strategy == "sliding_window":
             # Map chunk_size to window_size, overlap to step_size
             if 'chunk_size' in kwargs and 'window_size' not in kwargs:
@@ -233,9 +349,61 @@ class ChunkerFactory:
                 overlap = kwargs.pop('overlap')
                 # step_size = window_size - overlap
                 kwargs['step_size'] = kwargs.get('window_size', 512) - overlap
-            return SlidingWindowChunker(**kwargs)
+            base_chunker = SlidingWindowChunker(**kwargs)
         else:
             raise ValueError(f"Unknown chunking strategy: {strategy}")
+        
+        # Wrap with metadata extraction if enabled
+        if extract_metadata:
+            return MetadataEnhancedChunker(base_chunker)
+        else:
+            return base_chunker
+
+
+class MetadataEnhancedChunker:
+    """Wrapper that adds metadata chunks to any base chunker"""
+    
+    def __init__(self, base_chunker):
+        """
+        Initialize with a base chunker
+        
+        Args:
+            base_chunker: The underlying chunking strategy
+        """
+        self.base_chunker = base_chunker
+        self.metadata_extractor = MetadataExtractor()
+    
+    def chunk(self, text: str) -> List[Chunk]:
+        """
+        Chunk text and add dedicated metadata chunks
+        
+        Args:
+            text: Input text
+            
+        Returns:
+            List of chunks (content + metadata)
+        """
+        # Get content chunks from base chunker
+        content_chunks = self.base_chunker.chunk(text)
+        
+        # Extract and create metadata chunks
+        metadata_chunks = self.metadata_extractor.create_metadata_chunks(
+            text, 
+            start_chunk_id=len(content_chunks)
+        )
+        
+        # Combine: metadata chunks first for priority
+        all_chunks = metadata_chunks + content_chunks
+        
+        # Re-number chunk IDs
+        for i, chunk in enumerate(all_chunks):
+            chunk.chunk_id = i
+        
+        if metadata_chunks:
+            print(f"✓ Added {len(metadata_chunks)} metadata chunks")
+            print(f"  Total chunks: {len(all_chunks)} ({len(metadata_chunks)} metadata + {len(content_chunks)} content)")
+        
+        return all_chunks
 
 
 if __name__ == "__main__":

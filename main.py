@@ -39,7 +39,8 @@ def build_index(config):
     chunker = ChunkerFactory.create_chunker(
         strategy=config['chunking']['strategy'],
         chunk_size=config['chunking']['chunk_size'],
-        overlap=config['chunking']['chunk_overlap']
+        overlap=config['chunking']['chunk_overlap'],
+        extract_metadata=config['chunking'].get('extract_metadata', True)
     )
     chunks = chunker.chunk(text)
     chunk_dicts = [chunk.to_dict() for chunk in chunks]
@@ -148,9 +149,29 @@ def evaluate_mode(config):
         print(f"Please create evaluation dataset at: {config['data']['eval_dataset_path']}")
         return
     
+    # Get evaluation configuration
+    eval_config = config.get('evaluation', {})
+    use_llm_judge = eval_config.get('llm_judge', {}).get('enabled', False)
+    llm_judge_criteria = eval_config.get('llm_judge', {}).get('criteria', ['relevance', 'correctness', 'overall'])
+    run_closed_book = eval_config.get('run_closed_book', True)
+    
+    # Print configuration
+    print(f"\nEvaluation Configuration:")
+    print(f"  - Dataset samples: {len(eval_dataset)}")
+    print(f"  - LLM Judge: {'✓ Enabled' if use_llm_judge else '✗ Disabled'}")
+    if use_llm_judge:
+        print(f"    Criteria: {', '.join(llm_judge_criteria)}")
+    print(f"  - Closed-book: {'✓ Enabled' if run_closed_book else '✗ Disabled'}")
+    
     # Run evaluation
-    evaluator = RAGEvaluator(rag_pipeline, eval_dataset)
-    results = evaluator.full_evaluation(k_values=config['evaluation']['recall_at'])
+    evaluator = RAGEvaluator(
+        rag_pipeline, 
+        eval_dataset,
+        use_llm_judge=use_llm_judge,
+        llm_judge_criteria=llm_judge_criteria,
+        run_closed_book=run_closed_book
+    )
+    results = evaluator.full_evaluation(k_values=eval_config.get('recall_at', [1, 3, 5]))
     
     # Save results
     os.makedirs(config['experiment']['results_dir'], exist_ok=True)
@@ -159,6 +180,31 @@ def evaluate_mode(config):
         f"{config['experiment']['name']}_results.json"
     )
     evaluator.save_results(results, results_path)
+    
+    # Print summary
+    print("\n" + "="*60)
+    print("EVALUATION COMPLETE")
+    print("="*60)
+    print(f"\n📊 Results Summary:")
+    print(f"  RAG F1 Score: {results['rag'].get('f1', 0):.3f}")
+    print(f"  RAG Exact Match: {results['rag'].get('exact_match', 0):.3f}")
+    
+    if run_closed_book and results.get('closed_book'):
+        cb_f1 = results['closed_book'].get('f1', 0)
+        print(f"  Closed-Book F1: {cb_f1:.3f}")
+        if cb_f1 > 0:
+            improvement = ((results['rag']['f1'] - cb_f1) / cb_f1 * 100)
+            print(f"  Improvement: {improvement:.1f}%")
+    
+    if use_llm_judge and 'llm_judge' in results:
+        print(f"\n🤖 LLM Judge Scores:")
+        for criterion, score in results['llm_judge']['aggregate_scores'].items():
+            print(f"  {criterion.capitalize()}: {score:.2f}/5.0")
+    
+    print(f"\n📁 Results saved to: {results_path}")
+    if use_llm_judge and 'llm_judge' in results:
+        detailed_path = results_path.replace('.json', '_llm_judge_detailed.json')
+        print(f"📁 Detailed LLM Judge results: {detailed_path}")
 
 
 def main():
